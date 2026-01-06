@@ -15,8 +15,154 @@ import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 
 const STORAGE_KEY = "wbt_react_v3";
 
+const FILL_ESTIMATE_URL =
+  (import.meta.env.VITE_FILL_ESTIMATE_URL as string) ||
+  "https://onebottle-ai-bridge.vercel.app/api/fill-estimate";
+
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
+}
+
+class RateLimitError extends Error {
+  retryAfterMs?: number;
+  constructor(message: string, retryAfterMs?: number) {
+    super(message);
+    this.name = "RateLimitError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function parseRetryAfterToMs(retryAfter: string | null) {
+  if (!retryAfter) return null as number | null;
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const asDate = Date.parse(retryAfter);
+  if (!Number.isNaN(asDate)) return Math.max(0, asDate - Date.now());
+  return null;
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const t = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      window.clearTimeout(t);
+      cleanup();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+
+    const cleanup = () => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        window.clearTimeout(t);
+        cleanup();
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      signal.addEventListener("abort", onAbort);
+    }
+  });
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function downscaleDataUrl(dataUrl: string, maxW = 1200, quality = 0.85) {
+  return new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.width || 0;
+      const h = img.height || 0;
+      if (!w || !h) {
+        resolve(dataUrl);
+        return;
+      }
+      const scale = Math.min(1, maxW / w);
+      const targetW = Math.max(1, Math.round(w * scale));
+      const targetH = Math.max(1, Math.round(h * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => reject(new Error("Failed to load image (unsupported format?)"));
+    img.src = dataUrl;
+  });
+}
+
+async function estimatePercentFull(imageDataUrl: string, signal?: AbortSignal) {
+  const MAX_ATTEMPTS = 2;
+  let lastWaitMs: number | undefined;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetch(FILL_ESTIMATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageDataUrl }),
+      signal,
+    });
+
+    const raw = await res.text();
+    let data: any = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      // non-JSON response (still useful for debugging)
+    }
+
+    if (res.status === 429) {
+      const retryAfterMs = parseRetryAfterToMs(res.headers.get("retry-after"));
+      const backoffMs = Math.min(20000, 1200 * Math.pow(2, attempt - 1));
+      const jitterMs = Math.floor(Math.random() * 450);
+      const waitMs = (retryAfterMs != null && retryAfterMs > 0) ? retryAfterMs : backoffMs + jitterMs;
+      lastWaitMs = waitMs;
+
+      // If we still have attempts left, wait and retry.
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(waitMs, signal);
+        continue;
+      }
+
+      // Final attempt still rate-limited.
+      throw new RateLimitError(
+        `Scan failed (429) - Gemini API rate limit. Please try again in ${Math.max(1, Math.ceil(waitMs / 1000))}s.`,
+        waitMs
+      );
+    }
+
+    if (!res.ok) {
+      const msgFromApi = data?.error || data?.message;
+      const snippet = typeof raw === "string" ? raw.slice(0, 220) : "";
+      throw new Error(
+        `Scan failed (${res.status}) ${msgFromApi ? `- ${msgFromApi}` : snippet ? `- ${snippet}` : ""}`.trim()
+      );
+    }
+
+    if (typeof data?.percent_full === "number") return clamp(data.percent_full, 0, 100);
+    if (typeof data?.fill_fraction === "number") return clamp(data.fill_fraction * 100, 0, 100);
+    throw new Error("Scan returned an unexpected response shape");
+  }
+
+  // Should be unreachable, but keeps TS happy.
+  throw new RateLimitError("Scan failed (rate limited). Please try again.", lastWaitMs);
 }
 
 function dayKey(d: Date = new Date()) {
@@ -873,6 +1019,98 @@ export default function WaterBottleTracker() {
     if (state.hasOnboarded) setPendingRemaining(state.remaining);
   }, [state.remaining, state.hasOnboarded]);
 
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const scanAbortRef = useRef<AbortController | null>(null);
+  const [scanState, setScanState] = useState<"idle" | "picking" | "scanning" | "done" | "error">("idle");
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanCooldownUntil, setScanCooldownUntil] = useState<number>(0);
+  const [scanCooldownLeftMs, setScanCooldownLeftMs] = useState<number>(0);
+
+  useEffect(() => {
+    return () => {
+      if (scanAbortRef.current) scanAbortRef.current.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    const tick = () => {
+      const left = Math.max(0, scanCooldownUntil - Date.now());
+      setScanCooldownLeftMs(left);
+    };
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [scanCooldownUntil]);
+
+  function startScanPick() {
+    const left = Math.max(0, scanCooldownUntil - Date.now());
+    if (left > 0) {
+      setScanError(`Rate limited. Try again in ${Math.max(1, Math.ceil(left / 1000))}s.`);
+      setScanMessage(null);
+      setScanState("idle");
+      return;
+    }
+
+    setScanError(null);
+    setScanMessage(null);
+    setScanState("picking");
+    fileInputRef.current?.click();
+  }
+
+  function cancelScan() {
+    if (scanAbortRef.current) scanAbortRef.current.abort();
+    scanAbortRef.current = null;
+    setScanState("idle");
+    setScanMessage(null);
+    setScanError(null);
+  }
+
+  function onScanFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) {
+      setScanState("idle");
+      return;
+    }
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
+    setScanState("scanning");
+    setScanMessage("Scanning...");
+    setScanError(null);
+    (async () => {
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const downscaled = await downscaleDataUrl(dataUrl, 1200, 0.85);
+        const percent = await estimatePercentFull(downscaled, controller.signal);
+        const fraction = clamp(percent / 100, 0, 1);
+        setPendingRemaining(fraction);
+        setScanState("done");
+        setScanMessage(`Scan complete: ${Math.round(percent)}% full`);
+        setScanError(null);
+      } catch (err) {
+        if (controller.signal.aborted) {
+          setScanState("idle");
+          setScanMessage(null);
+          setScanError(null);
+          return;
+        }
+        const msg = err instanceof Error ? err.message : "Couldn’t read the bottle. Try again.";
+        setScanState("error");
+        setScanMessage(null);
+
+        if (err instanceof RateLimitError) {
+          const ms = typeof err.retryAfterMs === "number" && err.retryAfterMs > 0 ? err.retryAfterMs : 15000;
+          setScanCooldownUntil(Date.now() + ms);
+        }
+
+        setScanError(msg);
+      } finally {
+        scanAbortRef.current = null;
+      }
+    })();
+  }
+
   function dialValueFromClientY(clientY: number) {
     const el = dialRef.current;
     if (!el) return state.remaining;
@@ -1156,6 +1394,38 @@ export default function WaterBottleTracker() {
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="mt-5 flex flex-col items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={onScanFileChange}
+            />
+            <button
+              onClick={startScanPick}
+              disabled={scanState === "scanning" || scanCooldownLeftMs > 0}
+              className={
+                "w-full max-w-md px-5 py-3 rounded-2xl font-extrabold active:scale-[0.99] transition " +
+                (scanState === "scanning" ? "bg-green-500/50 text-black/70" : "bg-green-500 text-black")
+              }
+            >
+              {scanState === "scanning"
+                ? "Scanning..."
+                : scanCooldownLeftMs > 0
+                  ? `Try again in ${Math.max(1, Math.ceil(scanCooldownLeftMs / 1000))}s`
+                  : "Scan Bottle"}
+            </button>
+            {scanState === "scanning" && (
+              <button onClick={cancelScan} className="text-xs font-semibold text-white/70 hover:text-white">
+                Cancel
+              </button>
+            )}
+            {scanMessage && <div className="text-xs text-white/70">{scanMessage}</div>}
+            {scanError && <div className="text-xs text-[#FF453A]">{scanError}</div>}
           </div>
 
           <div className="mt-5 flex justify-center">
