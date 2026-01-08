@@ -241,7 +241,21 @@ function bottlePath(shape: string) {
   }
 }
 
-function BottleVector({ shape, level, className }: { shape: string; level: number; className?: string }) {
+function BottleVector({
+  shape,
+  level,
+  className,
+  style,
+  fillColor = "rgba(10,132,255,0.35)",
+  edgeColor = "rgba(10,132,255,0.65)",
+}: {
+  shape: string;
+  level: number;
+  className?: string;
+  style?: React.CSSProperties;
+  fillColor?: string;
+  edgeColor?: string;
+}) {
   const id = useId();
   const d = bottlePath(shape);
   const pct = clamp(level, 0, 1);
@@ -251,7 +265,7 @@ function BottleVector({ shape, level, className }: { shape: string; level: numbe
   const y = H - pct * H;
 
   return (
-    <svg viewBox="0 0 140 300" className={`h-[300px] ${className || ""}`} aria-hidden="true">
+    <svg viewBox="0 0 140 300" className={`h-[300px] ${className || ""}`} style={style} aria-hidden="true">
       <defs>
         <clipPath id={`clip-${id}`}>
           <path d={d} />
@@ -260,8 +274,8 @@ function BottleVector({ shape, level, className }: { shape: string; level: numbe
 
       <g clipPath={`url(#clip-${id})`}>
         <rect x="0" y="0" width={W} height={H} fill="rgba(255,255,255,0.03)" />
-        <rect x="0" y={y} width={W} height={pct * H} fill="rgba(10,132,255,0.35)" />
-        <rect x="10" y={Math.max(0, y - 2)} width={W - 20} height="2" fill="rgba(10,132,255,0.65)" />
+        <rect x="0" y={y} width={W} height={pct * H} fill={fillColor} />
+        <rect x="10" y={Math.max(0, y - 2)} width={W - 20} height="2" fill={edgeColor} />
       </g>
 
       <path d={d} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="4" />
@@ -287,7 +301,7 @@ type AppState = ReturnType<typeof makeDefaultState>;
 function makeDefaultState() {
   return {
     hasOnboarded: false,
-    step: 0 as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
+    step: 0 as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
     splashSeen: false,
 
     weightKg: 70,
@@ -297,12 +311,8 @@ function makeDefaultState() {
     goalML: 2000,
     bottleML: 500,
     shape: "standard" as "tall" | "standard" | "wide" | "tumbler",
-    snap: "quarters" as "quarters" | "tenths" | "free",
+    snap: "free" as "quarters" | "tenths" | "free",
 
-    bottleModel: "tallSlim" as "tallSlim" | "thirsti" | "stanley",
-
-    thirstiUnlocked: false,
-    stanleyUnlocked: false,
 
     dayKey: dayKey(),
     completedBottles: 0,
@@ -310,6 +320,8 @@ function makeDefaultState() {
 
     carryML: 0,
     extraML: 0,
+    onboardingScanPercent: null as null | number,
+    onboardingScanFraction: null as null | number,
     dailyLog: {} as Record<string, { consumedML: number; goalML: number; bottleML: number; carryML: number; extraML: number; at: number }>, 
 
     history: [] as Array<{ t: number; prevRemaining: number; prevCompleted: number; prevCarry: number; prevExtra: number; action?: string; ml?: number }>,
@@ -348,26 +360,6 @@ function DropletPlugIcon({ className }: { className?: string }) {
       <rect x="9.4" y="9" width="1" height="2" rx="0.4" fill="rgba(255,255,255,.92)" />
       <rect x="13.6" y="9" width="1" height="2" rx="0.4" fill="rgba(255,255,255,.92)" />
       <rect x="11" y="15" width="2" height="2" rx="1" fill="rgba(255,255,255,.92)" />
-    </svg>
-  );
-}
-
-function LockIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
-      <path
-        d="M7 11V8.5C7 5.5 9.2 3.2 12 3.2C14.8 3.2 17 5.5 17 8.5V11"
-        fill="none"
-        stroke="rgba(255,255,255,.55)"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <rect x="5.5" y="11" width="13" height="10" rx="2.4" fill="rgba(255,255,255,.10)" stroke="rgba(255,255,255,.22)" />
-      <path
-        d="M12 14.2c.9 0 1.6.7 1.6 1.6c0 .6-.3 1.1-.8 1.4v1.6h-1.6v-1.6c-.5-.3-.8-.8-.8-1.4c0-.9.7-1.6 1.6-1.6Z"
-        fill="rgba(255,255,255,.70)"
-        opacity="0.85"
-      />
     </svg>
   );
 }
@@ -486,6 +478,55 @@ function SplashBottle({ className, animate = true }: { className?: string; anima
       <path d={d} fill="none" stroke="rgba(255,255,255,0.28)" strokeWidth="4" />
       <path d={d} fill="none" stroke="rgba(255,255,255,0.09)" strokeWidth="1" />
     </svg>
+  );
+}
+
+function ScanResultBottle({ fraction }: { fraction: number }) {
+  const [level, setLevel] = useState(1);
+  const [mix, setMix] = useState(0);
+
+  useEffect(() => {
+    const from = 1;
+    const to = clamp(fraction, 0, 1);
+    const duration = 1200;
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setLevel(from + (to - from) * eased);
+      setMix(eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [fraction]);
+
+  const lerp = (a: number, b: number) => Math.round(a + (b - a) * mix);
+  const r = lerp(34, 10);
+  const g = lerp(197, 132);
+  const b = lerp(94, 255);
+  const fillColor = `rgba(${r},${g},${b},0.35)`;
+  const edgeColor = `rgba(${r},${g},${b},0.65)`;
+  const glowStrong = `radial-gradient(circle_at_50%_45%,rgba(${r},${g},${b},0.16),rgba(0,0,0,0)_68%)`;
+  const glowSoft = `radial-gradient(circle_at_50%_60%,rgba(${r},${g},${b},0.08),rgba(0,0,0,0)_72%)`;
+
+  return (
+    <div className="relative">
+      <div className="pointer-events-none absolute -inset-24 rounded-full blur-3xl opacity-60 mix-blend-screen" style={{ background: glowStrong }} />
+      <div className="pointer-events-none absolute -inset-28 rounded-full blur-3xl opacity-55" style={{ background: glowSoft }} />
+
+      <div style={{ animation: "floaty 2.8s ease-in-out infinite" }} className="w-[160px]">
+        <BottleVector
+          shape="standard"
+          level={level}
+          fillColor={fillColor}
+          edgeColor={edgeColor}
+          className="h-[320px] w-[160px]"
+          style={{ filter: `drop-shadow(0 22px 55px rgba(${r},${g},${b},0.16))` }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -1019,6 +1060,50 @@ export default function WaterBottleTracker() {
     if (state.hasOnboarded) setPendingRemaining(state.remaining);
   }, [state.remaining, state.hasOnboarded]);
 
+  const onboardingFileRef = useRef<HTMLInputElement | null>(null);
+  const onboardingAbortRef = useRef<AbortController | null>(null);
+  const [onboardingScanState, setOnboardingScanState] = useState<"idle" | "scanning" | "error">("idle");
+  const [onboardingScanError, setOnboardingScanError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (onboardingAbortRef.current) onboardingAbortRef.current.abort();
+    };
+  }, []);
+
+  function onOnboardingPick() {
+    setOnboardingScanError(null);
+    onboardingFileRef.current?.click();
+  }
+
+  function onOnboardingFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const controller = new AbortController();
+    onboardingAbortRef.current = controller;
+    setOnboardingScanState("scanning");
+    setOnboardingScanError(null);
+    (async () => {
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        const downscaled = await downscaleDataUrl(dataUrl, 1200, 0.85);
+        const percent = await estimatePercentFull(downscaled, controller.signal);
+        const fraction = clamp(percent / 100, 0, 1);
+        setState((s) => ({ ...s, onboardingScanPercent: Math.round(percent), onboardingScanFraction: fraction }));
+        setOnboardingScanState("idle");
+        setStep(10);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        const msg = err instanceof Error ? err.message : "Couldn’t scan the bottle. Try again.";
+        setOnboardingScanState("error");
+        setOnboardingScanError(msg);
+      } finally {
+        onboardingAbortRef.current = null;
+      }
+    })();
+  }
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scanAbortRef = useRef<AbortController | null>(null);
   const [scanState, setScanState] = useState<"idle" | "picking" | "scanning" | "done" | "error">("idle");
@@ -1160,6 +1245,7 @@ export default function WaterBottleTracker() {
   }, [pendingRemaining]);
 
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [bottleSizeFlowSource, setBottleSizeFlowSource] = useState<"onboarding" | "settings">("onboarding");
 
   function switchBottleKeepingConsumed(patch: Partial<AppState>) {
     setState((s) => {
@@ -1176,60 +1262,13 @@ export default function WaterBottleTracker() {
       } as any;
     });
   }
-  const [showBottleCapacity, setShowBottleCapacity] = useState(false);
-
-  // Ninja Thirsti (locked flow)
-  const [showThirstiHint, setShowThirstiHint] = useState(false);
-  const [showUnlockOptions, setShowUnlockOptions] = useState(false);
-  const [showAmazonRedirect, setShowAmazonRedirect] = useState(false);
-  const [showThirstiCapacity, setShowThirstiCapacity] = useState(false);
-  const [thirstiCap, setThirstiCap] = useState<530 | 700>(700);
-
-  // Stanley Tumbler (locked flow)
-  const [showStanleyHint, setShowStanleyHint] = useState(false);
-  const [showStanleyUnlockOptions, setShowStanleyUnlockOptions] = useState(false);
-  const [showStanleyAmazonRedirect, setShowStanleyAmazonRedirect] = useState(false);
-  const [showStanleyCapacity, setShowStanleyCapacity] = useState(false);
-  const [stanleyCap, setStanleyCap] = useState<880 | 1200>(880);
-
-  useEffect(() => {
-    // Reset staged UI bits whenever we leave bottle select.
-    if (state.step !== 5) {
-      setShowBottleCapacity(false);
-
-      // Thirsti
-      setShowThirstiHint(false);
-      setShowUnlockOptions(false);
-      setShowAmazonRedirect(false);
-      setShowThirstiCapacity(false);
-
-      // Stanley
-      setShowStanleyHint(false);
-      setShowStanleyUnlockOptions(false);
-      setShowStanleyAmazonRedirect(false);
-      setShowStanleyCapacity(false);
-    }
-  }, [state.step]);
-
-  useEffect(() => {
-    // Switching bottle types should reset the staged UI.
-    setShowBottleCapacity(false);
-
-    // Thirsti
-    setShowThirstiHint(false);
-    setShowUnlockOptions(false);
-    setShowAmazonRedirect(false);
-    setShowThirstiCapacity(false);
-
-    // Stanley
-    setShowStanleyHint(false);
-    setShowStanleyUnlockOptions(false);
-    setShowStanleyAmazonRedirect(false);
-    setShowStanleyCapacity(false);
-  }, [state.bottleModel]);
-
   function setStep(step: AppState["step"]) {
     setState((s) => ({ ...s, step }));
+  }
+
+  function resetAll() {
+    setState(() => makeDefaultState());
+    setBottleSizeFlowSource("onboarding");
   }
 
   function applyRecommendation() {
@@ -1246,7 +1285,7 @@ export default function WaterBottleTracker() {
     return <WelcomeSplash instant={!!state.splashSeen} onContinue={() => setState((s) => ({ ...s, splashSeen: true, step: 1 }))} />;
   }
 
-  if (state.hasOnboarded) {
+  if (state.hasOnboarded && state.step === 0) {
     return (
       <div className="min-h-screen bg-[#0B0B0F] text-white">
         {showQuickAdd && <QuickAddSheet onClose={() => setShowQuickAdd(false)} onAdd={addExtra} />}
@@ -1274,10 +1313,10 @@ export default function WaterBottleTracker() {
                   onClick={() => setState((s) => ({ ...s, celebrate: null }))}
                   className={
                     "mt-6 w-full px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] " +
-                    (state.celebrate.type === "goal" ? "bg-green-500 text-black" : "bg-[#0A84FF] text-white")
+                    (state.celebrate.type === "goal" ? "bg-green-500 text-black" : "bg-green-500 text-white")
                   }
                 >
-                  {state.celebrate.type === "goal" ? "Done" : "Continue"}
+                  {state.celebrate.type === "goal" ? "Done" : "Refill my bottle"}
                 </button>
               </div>
             </div>
@@ -1311,7 +1350,7 @@ export default function WaterBottleTracker() {
             </div>
 
             <button
-              onClick={() => setState((s) => ({ ...s, hasOnboarded: false, step: 6 }))}
+              onClick={() => setState((s) => ({ ...s, step: 6 }))}
               className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
               aria-label="Edit setup"
               title="Edit setup"
@@ -1440,7 +1479,7 @@ export default function WaterBottleTracker() {
                 "w-full max-w-md px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] transition " +
                 (Math.abs(pendingRemaining - state.remaining) < 1e-6
                   ? "bg-white/10 text-white/40 border border-white/10"
-                  : "bg-green-500 text-black")
+                  : "bg-[#0A84FF] text-white")
               }
             >
               Track
@@ -1469,21 +1508,52 @@ export default function WaterBottleTracker() {
   return (
     <div className="min-h-screen bg-[#0B0B0F] text-white">
       <div className="max-w-xl mx-auto px-5 pt-8 pb-10">
-        {state.step === 1 && <OnboardingIntro1 onContinue={() => setStep(2)} onSkip={() => setStep(5)} />}
-        {state.step === 2 && <OnboardingIntro2 onContinue={() => setStep(3)} onSkip={() => setStep(5)} />}
-        {state.step === 3 && <OnboardingIntro3 onContinue={() => setStep(4)} onSkip={() => setStep(5)} />}
+        {state.step === 1 && (
+          <OnboardingIntro1
+            onContinue={() => setStep(2)}
+            onSkip={() => {
+              setBottleSizeFlowSource("onboarding");
+              setStep(5);
+            }}
+          />
+        )}
+        {state.step === 2 && (
+          <OnboardingIntro2
+            onContinue={() => setStep(3)}
+            onSkip={() => {
+              setBottleSizeFlowSource("onboarding");
+              setStep(5);
+            }}
+          />
+        )}
+        {state.step === 3 && (
+          <OnboardingIntro3
+            onContinue={() => setStep(4)}
+            onSkip={() => {
+              setBottleSizeFlowSource("onboarding");
+              setStep(5);
+            }}
+          />
+        )}
         {state.step === 4 && (
           <OnboardingIntro4
-            onContinue={() => setStep(5)}
-            onSkip={() => setStep(5)}
-            onStartOver={() =>
+            onContinue={() => {
+              setBottleSizeFlowSource("onboarding");
               setState((s) => ({
                 ...s,
                 hasOnboarded: false,
-                step: 0,
-                splashSeen: false,
-              }))
-            }
+                step: 5,
+              }));
+            }}
+            onSkip={() => {
+              setBottleSizeFlowSource("onboarding");
+              setState((s) => ({
+                ...s,
+                hasOnboarded: false,
+                step: 5,
+              }));
+            }}
+            onStartOver={resetAll}
           />
         )}
         {state.step === 5 && (
@@ -1492,520 +1562,156 @@ export default function WaterBottleTracker() {
               @keyframes selIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
               @keyframes selInSoft { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
               @keyframes floatSel { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
-              @keyframes arrowHint { 0%,100% { transform: translateY(0); opacity: .35; } 50% { transform: translateY(-2px); opacity: .55; } }
-              @keyframes arrowBlink { 0%,100% { opacity: .72; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
               @keyframes capIn { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
-              @keyframes nudge { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
-              @keyframes hintIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-              @keyframes unlockPop { from { opacity: 0; transform: translateY(10px) scale(0.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
-              @keyframes orbitSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-              .orbitRing {
-                padding: 2px;
-                border-radius: 1rem;
-                background: conic-gradient(
-                  from 0deg,
-                  rgba(255, 255, 255, 0) 0deg,
-                  rgba(255, 255, 255, 0.0) 40deg,
-                  rgba(255, 255, 255, 0.85) 70deg,
-                  rgba(255, 255, 255, 0.0) 110deg,
-                  rgba(255, 255, 255, 0) 360deg
-                );
-                opacity: 0.7;
-                -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-                -webkit-mask-composite: xor;
-                mask-composite: exclude;
-              }
             `}</style>
 
-            {(() => {
-              const models = ["tallSlim", "thirsti", "stanley"] as const;
-              const idx = Math.max(0, models.indexOf(state.bottleModel as any));
-              const prev = models[(idx + models.length - 1) % models.length];
-              const next = models[(idx + 1) % models.length];
+            <div className="flex items-start justify-between gap-3" style={{ animation: "selIn .55s ease-out .04s both" }}>
+              <div className="text-2xl font-extrabold">Get started</div>
+              <button onClick={resetAll} className="text-[16px] font-medium text-[#FF453A]">
+                Start over
+              </button>
+            </div>
 
-              const isTall = state.bottleModel === "tallSlim";
-              const isThirsti = state.bottleModel === "thirsti";
-              const isStanley = state.bottleModel === "stanley";
+            <div className="mt-2 text-white/70" style={{ animation: "selIn .55s ease-out .10s both" }}>
+              Set your bottle size to begin tracking.
+            </div>
 
-              const showHint = (isThirsti && showThirstiHint) || (isStanley && showStanleyHint);
+            <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5" style={{ animation: "selInSoft .6s cubic-bezier(0.2,0,0,1) .18s both" }}>
+              <div className="flex flex-col items-center">
+                <div style={{ animation: "floatSel 3.2s ease-in-out .6s infinite" }} className="mt-2">
+                  <BottleVector shape="standard" level={1} className="w-[180px] [filter:drop-shadow(0_22px_55px_rgba(0,0,0,0.55))]" />
+                </div>
 
-              const locked = (isThirsti && !state.thirstiUnlocked) || (isStanley && !state.stanleyUnlocked);
-              const optionsOpen = (isThirsti && showUnlockOptions) || (isStanley && showStanleyUnlockOptions);
+              </div>
+            </div>
 
-              const label = isTall ? "Tall / Slim" : isThirsti ? "Ninja Thirsti" : "Stanley Tumbler";
-              const sub = isTall
-                ? "More bottle options coming soon."
-                : isThirsti
-                  ? (state.thirstiUnlocked ? "Unlocked bottle — ready to use." : "Locked bottle — unlock to use.")
-                  : (state.stanleyUnlocked ? "Unlocked bottle — ready to use." : "Locked bottle — unlock to use.");
+            <div className="mt-5 rounded-3xl border border-white/10 bg-white/6 p-5" style={{ animation: "capIn .5s cubic-bezier(0.2,0,0,1) both" }}>
+              <div className="text-xs text-white/65">How much can the bottle hold? (ml)</div>
+              <input
+                className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
+                type="number"
+                min={100}
+                max={2000}
+                step={50}
+                value={state.bottleML}
+                onChange={(e) => setState((s) => ({ ...s, bottleML: Number((e.target as HTMLInputElement).value || 500) }))}
+              />
+              <div className="mt-2 text-xs text-white/55">Common sizes: 500, 750, 1000 ml</div>
+            </div>
 
-              const showDevLock = (isThirsti && state.thirstiUnlocked) || (isStanley && state.stanleyUnlocked);
+            <div className="mt-6 flex gap-2" style={{ animation: "selIn .55s ease-out .32s both" }}>
+              <button
+                onClick={() => setStep(4)}
+                className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
+              >
+                Back
+              </button>
 
-              const clearAllOverlays = () => {
-                // Tall/Slim
-                setShowBottleCapacity(false);
-
-                // Thirsti
-                setShowThirstiHint(false);
-                setShowUnlockOptions(false);
-                setShowAmazonRedirect(false);
-                setShowThirstiCapacity(false);
-
-                // Stanley
-                setShowStanleyHint(false);
-                setShowStanleyUnlockOptions(false);
-                setShowStanleyAmazonRedirect(false);
-                setShowStanleyCapacity(false);
-              };
-
-              const goPrev = () => setState((s) => ({ ...s, bottleModel: prev }));
-              const goNext = () => setState((s) => ({ ...s, bottleModel: next }));
-
-              return (
-                <>
-                  <div className="flex items-start justify-between gap-3" style={{ animation: "selIn .55s ease-out .04s both" }}>
-                    <div className="text-2xl font-extrabold">Select your water bottle</div>
-
-                    {showDevLock && (
-                      <button
-                        onClick={() => {
-                          // Dev-only: re-lock so you can retest.
-                          if (isThirsti) setState((s) => ({ ...s, thirstiUnlocked: false }));
-                          if (isStanley) setState((s) => ({ ...s, stanleyUnlocked: false }));
-                          clearAllOverlays();
-                        }}
-                        className="text-[16px] font-medium text-[#FF453A]"
-                        title="Dev: Lock bottle"
-                      >
-                        Lock bottle
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="mt-2 text-white/70" style={{ animation: "selIn .55s ease-out .10s both" }}>
-                    Choose the bottle you’ll be using each day.
-                  </div>
-
-                  <div className="mt-6 rounded-3xl border border-white/10 bg-white/6 p-5" style={{ animation: "selInSoft .6s cubic-bezier(0.2,0,0,1) .18s both" }}>
-                    <div className="flex items-center justify-center gap-4">
-                      <button
-                        onClick={goPrev}
-                        className={
-                          "h-12 w-12 rounded-2xl border border-white/12 bg-white/6 active:scale-[0.99] flex items-center justify-center " +
-                          "text-[#0A84FF]"
-                        }
-                        title="Previous"
-                        style={{ animation: "selIn .55s ease-out .24s both" }}
-                      >
-                        <span
-                          className={(idx === 0 ? "text-[30px]" : "text-[30px]") + " w-[1em] text-center leading-none relative -top-[2px]"}
-                          style={
-                            idx === 0
-                              ? { animation: "arrowBlink 2.8s ease-in-out .2s infinite" }
-                              : { animation: "arrowHint 3.0s ease-in-out 1.2s infinite" }
-                          }
-                        >
-                          ‹
-                        </span>
-                      </button>
-
-                      <div
-                        className="flex flex-col items-center"
-                        style={{
-                          animation: "selIn .55s ease-out .26s both" + (showHint ? ", nudge .38s ease-out both" : ""),
-                        }}
-                      >
-                        <div style={{ animation: "floatSel 3.2s ease-in-out .6s infinite" }} className="mt-2">
-                          {isTall ? (
-                            <BottleVector shape="standard" level={1} className="w-[180px] [filter:drop-shadow(0_22px_55px_rgba(0,0,0,0.55))]" />
-                          ) : (isThirsti && state.thirstiUnlocked) ? (
-                            <BottleVector shape="standard" level={1} className="w-[180px] [filter:drop-shadow(0_22px_55px_rgba(255,214,10,0.10))]" />
-                          ) : (isStanley && state.stanleyUnlocked) ? (
-                            <BottleVector shape="tumbler" level={1} className="w-[180px] [filter:drop-shadow(0_22px_55px_rgba(255,214,10,0.10))]" />
-                          ) : (
-                            <div className="h-[300px] w-[180px] flex items-center justify-center">
-                              <div className="flex flex-col items-center">
-                                <div className="h-24 w-24 rounded-3xl border border-white/12 bg-white/6 flex items-center justify-center">
-                                  <LockIcon className="h-12 w-12" />
-                                </div>
-                                <div className="mt-3 text-xs text-white/55">image arriving in next build</div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="mt-3 text-lg font-extrabold">{label}</div>
-                        <div className="mt-1 text-xs text-white/55">{sub}</div>
-
-                        {((isThirsti && state.thirstiUnlocked) || (isStanley && state.stanleyUnlocked)) && (
-                          <div className="mt-1 text-xs italic text-[#FF453A]/70">Artwork will be updated in the next build.</div>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={goNext}
-                        className={
-                          "h-12 w-12 rounded-2xl border border-white/12 bg-white/6 active:scale-[0.99] flex items-center justify-center text-[#0A84FF]"
-                        }
-                        title="Next"
-                        style={{ animation: "selIn .55s ease-out .24s both" }}
-                      >
-                        <span
-                          className={"text-[30px] w-[1em] text-center leading-none relative -top-[2px]"}
-                          style={
-                            idx === 0 || idx === 2
-                              ? { animation: "arrowBlink 2.8s ease-in-out .2s infinite" }
-                              : { animation: "arrowHint 3.0s ease-in-out 1.2s infinite" }
-                          }
-                        >
-                          ›
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Stage in the capacity question after Continue (Tall/Slim only) */}
-                  {showBottleCapacity && isTall && (
-                    <div className="mt-5 rounded-3xl border border-white/10 bg-white/6 p-5" style={{ animation: "capIn .5s cubic-bezier(0.2,0,0,1) both" }}>
-                      <div className="text-xs text-white/65">How much can the bottle hold? (ml)</div>
-                      <input
-                        className="mt-1 w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/5 font-extrabold outline-none"
-                        type="number"
-                        min={100}
-                        max={2000}
-                        step={50}
-                        value={state.bottleML}
-                        onChange={(e) => setState((s) => ({ ...s, bottleML: Number((e.target as HTMLInputElement).value || 500) }))}
-                      />
-                      <div className="mt-2 text-xs text-white/55">Common sizes: 500, 750, 1000 ml</div>
-                    </div>
-                  )}
-
-                  <div className="mt-6 flex gap-2" style={{ animation: "selIn .55s ease-out .32s both" }}>
-                    <button
-                      onClick={() => {
-                        // Close option sheets first
-                        if (optionsOpen) {
-                          if (isThirsti) setShowUnlockOptions(false);
-                          if (isStanley) setShowStanleyUnlockOptions(false);
-                          return;
-                        }
-                        if (showBottleCapacity) {
-                          setShowBottleCapacity(false);
-                          return;
-                        }
-                        setStep(4);
-                      }}
-                      className="flex-1 px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold"
-                    >
-                      Back
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        if (isThirsti) {
-                          if (state.thirstiUnlocked) {
-                            switchBottleKeepingConsumed({ shape: "standard" });
-                            setStep(7);
-                            return;
-                          }
-                          // reveal options
-                          setShowBottleCapacity(false);
-                          setShowUnlockOptions(true);
-                          setShowThirstiHint(true);
-                          window.setTimeout(() => setShowThirstiHint(false), 1600);
-                          return;
-                        }
-
-                        if (isStanley) {
-                          if (state.stanleyUnlocked) {
-                            switchBottleKeepingConsumed({ shape: "tumbler" });
-                            setStep(7);
-                            return;
-                          }
-                          setShowBottleCapacity(false);
-                          setShowStanleyUnlockOptions(true);
-                          setShowStanleyHint(true);
-                          window.setTimeout(() => setShowStanleyHint(false), 1600);
-                          return;
-                        }
-
-                        // Tall/Slim
-                        if (!showBottleCapacity) {
-                          setShowBottleCapacity(true);
-                          return;
-                        }
-                        switchBottleKeepingConsumed({ shape: "standard" });
-                        setStep(7);
-                      }}
-                      className={
-                        "relative overflow-hidden flex-1 px-4 py-4 rounded-2xl font-extrabold active:scale-[0.99] transition " +
-                        (isThirsti
-                          ? (state.thirstiUnlocked ? "bg-[#0A84FF] text-white" : "bg-[#FFD60A] text-black")
-                          : isStanley
-                            ? (state.stanleyUnlocked ? "bg-[#0A84FF] text-white" : "bg-[#FFD60A] text-black")
-                            : "bg-[#0A84FF] text-white") +
-                        ((optionsOpen && !locked) ? "" : "") +
-                        (optionsOpen ? " opacity-35 pointer-events-none" : "")
-                      }
-                    >
-                      {locked && !optionsOpen && (
-                        <span className="pointer-events-none absolute -inset-[2px] orbitRing" style={{ animation: "orbitSpin 2.6s linear infinite" }} />
-                      )}
-                      <span className="relative">
-                        {isThirsti
-                          ? (state.thirstiUnlocked ? "Continue" : "Unlock")
-                          : isStanley
-                            ? (state.stanleyUnlocked ? "Continue" : "Unlock")
-                            : (showBottleCapacity ? "Next" : "Continue")}
-                      </span>
-                    </button>
-                  </div>
-
-                  {/* Thirsti unlock options */}
-                  {isThirsti && showUnlockOptions && (
-                    <div className="mt-4 grid gap-3" style={{ animation: "unlockPop .45s cubic-bezier(0.2,0,0,1) both" }}>
-                      <button
-                        onClick={() => setShowAmazonRedirect(true)}
-                        className="w-full px-4 py-4 rounded-2xl bg-[#FF9F0A] text-black font-extrabold active:scale-[0.99]"
-                      >
-                        Purchase on Amazon
-                      </button>
-                      <button
-                        onClick={() => {
-                          const current = Number(state.bottleML);
-                          setThirstiCap(current === 530 ? 530 : 700);
-                          setShowThirstiCapacity(true);
-                        }}
-                        className="w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/8 font-extrabold text-[15px] leading-tight active:scale-[0.99]"
-                      >
-                        I already have the bottle
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Stanley unlock options */}
-                  {isStanley && showStanleyUnlockOptions && (
-                    <div className="mt-4 grid gap-3" style={{ animation: "unlockPop .45s cubic-bezier(0.2,0,0,1) both" }}>
-                      <button
-                        onClick={() => setShowStanleyAmazonRedirect(true)}
-                        className="w-full px-4 py-4 rounded-2xl bg-[#FF9F0A] text-black font-extrabold active:scale-[0.99]"
-                      >
-                        Purchase on Amazon
-                      </button>
-                      <button
-                        onClick={() => {
-                          const current = Number(state.bottleML);
-                          setStanleyCap(current === 1200 ? 1200 : 880);
-                          setShowStanleyCapacity(true);
-                        }}
-                        className="w-full px-4 py-3 rounded-2xl border border-white/15 bg-white/8 font-extrabold text-[15px] leading-tight active:scale-[0.99]"
-                      >
-                        I already have the bottle
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Thirsti Amazon modal */}
-                  {showAmazonRedirect && (
-                    <div className="fixed inset-0 z-50">
-                      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowAmazonRedirect(false)} />
-                      <div className="absolute inset-0 flex items-center justify-center px-5">
-                        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-5 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
-                          <div className="flex items-center justify-between">
-                            <div className="text-lg font-extrabold">Amazon redirect</div>
-                            <button
-                              onClick={() => setShowAmazonRedirect(false)}
-                              className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
-                              aria-label="Close"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                          <div className="mt-3 text-sm text-white/75 leading-relaxed">
-                            <div>You will be redirected to the Ninja Thirsti Amazon page.</div>
-                            <div className="mt-2 text-white/65">If you were not redirected, click the link:</div>
-                            <div className="mt-3">
-                              <a
-                                href="https://www.amazon.co.uk/Ninja-Leak-Proof-Carbonated-Insulated-DW1801EUUKWH/dp/B0CWP4JQ4H/ref=sr_1_7?dib=eyJ2IjoiMSJ9.vNxVihGL7abs5rgTNNQA-3W-Els92fpry8VuCBjDW5zBDQxAQBVeU7yTte3qMUbFlQbtpfNA2ksYwS-WM-n3nznCBsMnk0It9haVDnUL_sVcQQrIsyC3k-4Si_qwReU_S3x3PXClSiCFdpZy8mtLqC8lT2qu4iEEXtwtg9haTJ4qbt599uRTAjzgXQXZHrPqQ3xoFYhg7yZbOSS6aGVu5zqfinupNd7XRB1qsDDNz0ny7AhnxUs31lhLY3qY21a235cOBu51EwYpg5CahwBZIjxH6KNO4F5gkxIYX06Kelo.StknIW14xQLjtsKv_Sj5GDSuNMGTKhkzlBsQF-FTKpk&dib_tag=se&keywords=ninja%2Bthirsty&qid=1767141423&sr=8-7&th=1"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-[#85C0E7] font-extrabold underline underline-offset-4"
-                              >
-                                Ninja Thirsti Amazon Page
-                              </a>
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => setShowAmazonRedirect(false)}
-                            className="mt-5 w-full px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold active:scale-[0.99]"
-                          >
-                            Close
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Stanley Amazon modal */}
-                  {showStanleyAmazonRedirect && (
-                    <div className="fixed inset-0 z-50">
-                      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowStanleyAmazonRedirect(false)} />
-                      <div className="absolute inset-0 flex items-center justify-center px-5">
-                        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-5 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
-                          <div className="flex items-center justify-between">
-                            <div className="text-lg font-extrabold">Amazon redirect</div>
-                            <button
-                              onClick={() => setShowStanleyAmazonRedirect(false)}
-                              className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
-                              aria-label="Close"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                          <div className="mt-3 text-sm text-white/75 leading-relaxed">
-                            <div>You will be redirected to the Stanley Tumbler Amazon page.</div>
-                            <div className="mt-2 text-white/65">If you were not redirected, click the link:</div>
-                            <div className="mt-3">
-                              <a
-                                href="https://www.amazon.co.uk/Stanley-Quencher-H2-0-Flowstate-Tumbler/dp/B0F4XTNL3Z/ref=sr_1_1?dib=eyJ2IjoiMSJ9.pVoWK8DmFww-5mPID8YSTZB3Krm_BHNXP053y2WVtVDurSdJ7LybUcCx8DC5B3kpIDD9ts41nJIX_n1s6Gn4269GlxBlmlGinDHHz50Plf88aW-2n09YtOSG2xkQjcbK8Z56jE8gM1Tv_RM7ZSm7q2fUlvcRRsEIfS7yWbDhKQLjzP4Bxa5wrBoboBsM0rjMNQwusaTlaY3LLqEwMsxSKExOW9cuTiAfyL6tgUe8wMlFqlU1f5xbyPuaZvOB6p-MarWf4T5pJ7ii5OcckJ48s2SLYpyMEpHn0lyXDgT909E4.Fhhn3qg90JD5XY0m6BZBvW8IytOYE-_CULJccPMjBKM&dib_tag=se&keywords=stanley%2Bcup&qid=1767143452&sr=8-1&th=1"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-[#85C0E7] font-extrabold underline underline-offset-4"
-                              >
-                                Stanley Tumbler Amazon Page
-                              </a>
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => setShowStanleyAmazonRedirect(false)}
-                            className="mt-5 w-full px-4 py-4 rounded-2xl border border-white/15 bg-white/8 font-extrabold active:scale-[0.99]"
-                          >
-                            Close
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Thirsti capacity modal */}
-                  {showThirstiCapacity && (
-                    <div className="fixed inset-0 z-50">
-                      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowThirstiCapacity(false)} />
-                      <div className="absolute inset-0 flex items-center justify-center px-5">
-                        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-5 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
-                          <div className="flex items-center justify-between">
-                            <div className="text-lg font-extrabold">How much can the bottle hold? (ml)</div>
-                            <button
-                              onClick={() => setShowThirstiCapacity(false)}
-                              className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
-                              aria-label="Close"
-                            >
-                              ✕
-                            </button>
-                          </div>
-
-                          <div className="mt-4 grid grid-cols-2 gap-3">
-                            {[530, 700].map((ml) => {
-                              const active = thirstiCap === ml;
-                              return (
-                                <button
-                                  key={ml}
-                                  onClick={() => setThirstiCap(ml as 530 | 700)}
-                                  className={
-                                    "px-4 py-4 rounded-2xl border font-extrabold tabular-nums transition active:scale-[0.99] " +
-                                    (active ? "border-[#FFD60A]/60 bg-[#FFD60A]/15" : "border-white/15 bg-white/6")
-                                  }
-                                >
-                                  <div className="text-xl">{ml}ml</div>
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          <button
-                            onClick={() => {
-                              setState((s) => ({
-                                ...s,
-                                bottleModel: "thirsti",
-                                thirstiUnlocked: true,
-                                bottleML: thirstiCap,
-                                shape: "standard",
-                              }));
-                              setShowThirstiCapacity(false);
-                              setShowUnlockOptions(false);
-                              setStep(7);
-                            }}
-                            className="mt-5 w-full px-4 py-4 rounded-2xl bg-[#FFD60A] text-black font-extrabold active:scale-[0.99]"
-                          >
-                            Unlock my bottle
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Stanley capacity modal */}
-                  {showStanleyCapacity && (
-                    <div className="fixed inset-0 z-50">
-                      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowStanleyCapacity(false)} />
-                      <div className="absolute inset-0 flex items-center justify-center px-5">
-                        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#121218]/95 p-5 shadow-[0_20px_60px_rgba(0,0,0,.55)]">
-                          <div className="flex items-center justify-between">
-                            <div className="text-lg font-extrabold">How much can the bottle hold? (ml)</div>
-                            <button
-                              onClick={() => setShowStanleyCapacity(false)}
-                              className="h-10 w-10 rounded-2xl border border-white/12 bg-white/8 active:bg-white/12 flex items-center justify-center"
-                              aria-label="Close"
-                            >
-                              ✕
-                            </button>
-                          </div>
-
-                          <div className="mt-4 grid grid-cols-2 gap-3">
-                            {[880, 1200].map((ml) => {
-                              const active = stanleyCap === ml;
-                              return (
-                                <button
-                                  key={ml}
-                                  onClick={() => setStanleyCap(ml as 880 | 1200)}
-                                  className={
-                                    "px-4 py-4 rounded-2xl border font-extrabold tabular-nums transition active:scale-[0.99] " +
-                                    (active ? "border-[#FFD60A]/60 bg-[#FFD60A]/15" : "border-white/15 bg-white/6")
-                                  }
-                                >
-                                  <div className="text-xl">{ml}ml</div>
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          <button
-                            onClick={() => {
-                              setState((s) => ({
-                                ...s,
-                                bottleModel: "stanley",
-                                stanleyUnlocked: true,
-                                bottleML: stanleyCap,
-                                shape: "tumbler",
-                              }));
-                              setShowStanleyCapacity(false);
-                              setShowStanleyUnlockOptions(false);
-                              setStep(7);
-                            }}
-                            className="mt-5 w-full px-4 py-4 rounded-2xl bg-[#FFD60A] text-black font-extrabold active:scale-[0.99]"
-                          >
-                            Unlock my bottle
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              );
-            })()}
+              <button
+                onClick={() => {
+                  switchBottleKeepingConsumed({ shape: "standard" });
+                  setStep(bottleSizeFlowSource === "settings" ? 6 : 9);
+                }}
+                className="flex-1 px-4 py-4 rounded-2xl bg-[#0A84FF] font-extrabold"
+              >
+                Continue
+              </button>
+            </div>
           </div>
         )}
+
+        {state.step === 9 && (
+          <div className="text-center">
+            <style>{`
+              @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+              @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+            `}</style>
+
+            <div className="mx-auto mb-6 flex h-[360px] items-center justify-center">
+              <div className="relative">
+                <div className="pointer-events-none absolute -inset-24 rounded-full bg-[radial-gradient(circle_at_50%_45%,rgba(34,197,94,0.16),rgba(0,0,0,0)_68%)] blur-3xl opacity-60 mix-blend-screen" />
+                <div className="pointer-events-none absolute -inset-28 rounded-full bg-[radial-gradient(circle_at_50%_60%,rgba(34,197,94,0.08),rgba(0,0,0,0)_72%)] blur-3xl opacity-55" />
+
+                <div style={{ animation: "floaty 2.8s ease-in-out infinite" }} className="w-[160px]">
+                  <SplashBottle
+                    animate
+                    className="h-[320px] w-[160px] [filter:drop-shadow(0_22px_55px_rgba(34,197,94,0.16))]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ animation: "fadeUp .65s ease-out both" }} className="text-3xl font-extrabold">
+              Take a photo of your bottle
+            </div>
+            <div className="mt-3 text-white/70">
+              We’ll automatically track{" "}
+              <span className="text-[#0A84FF]">how much water you have left</span>
+            </div>
+
+            <input
+              ref={onboardingFileRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={onOnboardingFileChange}
+            />
+
+            <button
+              onClick={onOnboardingPick}
+              disabled={onboardingScanState === "scanning"}
+              className={
+                "mt-8 w-full max-w-md px-5 py-4 rounded-2xl font-extrabold active:scale-[0.99] transition " +
+                (onboardingScanState === "scanning" ? "bg-green-500/60 text-white/80" : "bg-green-500 text-white")
+              }
+            >
+              {onboardingScanState === "scanning" ? "Scanning..." : "Scan my bottle"}
+            </button>
+
+            {onboardingScanError && <div className="mt-3 text-xs text-[#FF453A]">{onboardingScanError}</div>}
+          </div>
+        )}
+
+        {state.step === 10 && (() => {
+          const scanFraction = clamp(
+            state.onboardingScanFraction ?? (state.onboardingScanPercent ?? 0) / 100,
+            0,
+            1
+          );
+          const scanPercent = Math.round(state.onboardingScanPercent ?? scanFraction * 100);
+          const drankMl = Math.round((1 - scanFraction) * state.bottleML);
+
+          return (
+            <div className="text-center">
+              <style>{`
+                @keyframes floaty { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+                @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+              `}</style>
+
+              <div className="mx-auto mb-6 flex h-[360px] items-center justify-center">
+                <ScanResultBottle fraction={scanFraction} />
+              </div>
+
+              <div style={{ animation: "fadeUp .65s ease-out both" }} className="text-3xl font-extrabold">
+                Scan complete
+              </div>
+              <div className="mt-2 text-white/70">Your bottle is {scanPercent}% full</div>
+
+              <div className="mt-4 h-3 rounded-full bg-white/10 overflow-hidden max-w-md mx-auto">
+                <div className="h-full rounded-full bg-[#0A84FF]" style={{ width: `${Math.round(scanFraction * 100)}%` }} />
+              </div>
+              <div className="mt-2 text-sm font-extrabold text-[#0A84FF]">+{drankMl} ml drank</div>
+
+              <button
+                onClick={() => setStep(7)}
+                className="mt-8 w-full max-w-md px-5 py-4 rounded-2xl bg-[#0A84FF] font-extrabold active:scale-[0.99]"
+              >
+                Continue
+              </button>
+            </div>
+          );
+        })()}
 
         {state.step === 6 && (
           <div>
@@ -2044,9 +1750,7 @@ export default function WaterBottleTracker() {
 
               <div className="mt-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-4 flex items-center justify-between">
                 <div>
-                  <div className="font-extrabold">
-                    {state.bottleModel === "tallSlim" ? "Tall / Slim" : state.bottleModel === "thirsti" ? "Ninja Thirsti" : "Stanley Tumbler"}
-                  </div>
+                  <div className="font-extrabold">Tall / Slim</div>
                   <div className="mt-1 text-xs text-white/60">
                     {state.bottleML} ml • {state.shape === "tumbler" ? "Tumbler" : "Standard"}
                   </div>
@@ -2055,37 +1759,14 @@ export default function WaterBottleTracker() {
               </div>
 
               <button
-                onClick={() => setStep(5)}
+                onClick={() => {
+                  setBottleSizeFlowSource("settings");
+                  setStep(5);
+                }}
                 className="mt-4 w-full px-4 py-4 rounded-2xl bg-[#FFD60A] text-black font-extrabold active:scale-[0.99]"
               >
                 Change water bottle
               </button>
-            </div>
-
-            <div
-              className="mt-5 rounded-3xl border border-white/10 bg-white/6 p-5"
-              style={{ animation: "setupInSoft .6s cubic-bezier(0.2,0,0,1) .22s both" }}
-            >
-              <div className="text-xs text-white/65">Scroll wheel snapping</div>
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                {([
-                  { k: "quarters" as const, t: "Quarters" },
-                  { k: "tenths" as const, t: "Tenths" },
-                  { k: "free" as const, t: "Free" },
-                ] as const).map((x) => (
-                  <button
-                    key={x.k}
-                    onClick={() => setState((s) => ({ ...s, snap: x.k }))}
-                    className={
-                      "px-3 py-3 rounded-2xl border font-extrabold " +
-                      (state.snap === x.k ? "border-[#0A84FF]/60 bg-[#0A84FF]/20" : "border-white/15 bg-white/5")
-                    }
-                  >
-                    {x.t}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-2 text-xs text-white/55">Tip: snapping makes the scroll feel less fussy.</div>
             </div>
 
             <div className="mt-4" style={{ animation: "setupIn .55s ease-out .26s both" }}>
@@ -2237,6 +1918,7 @@ export default function WaterBottleTracker() {
                   setState((s) => ({
                     ...s,
                     hasOnboarded: true,
+                    step: 0,
                     dayKey: dayKey(),
                     completedBottles: 0,
                     remaining: 1,
