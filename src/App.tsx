@@ -182,9 +182,30 @@ function ceilDiv(a: number, b: number) {
   return b <= 0 ? 0 : Math.ceil(a / b);
 }
 
-function msUntilNextMidnight(d: Date = new Date()) {
+function sleepBoundaryMins(sleepMins: number) {
+  const m = Math.round(sleepMins);
+  return ((m % 1440) + 1440) % 1440;
+}
+
+function dayKeyBySleep(d: Date = new Date(), sleepMins: number) {
+  const boundary = sleepBoundaryMins(sleepMins);
+  const shifted = new Date(d.getTime() - boundary * 60 * 1000);
+  return dayKey(shifted);
+}
+
+function prevDayKeyBySleep(d: Date = new Date(), sleepMins: number) {
+  const boundary = sleepBoundaryMins(sleepMins);
+  const shifted = new Date(d.getTime() - boundary * 60 * 1000);
+  shifted.setDate(shifted.getDate() - 1);
+  return dayKey(shifted);
+}
+
+function msUntilNextSleep(d: Date = new Date(), sleepMins: number) {
+  const boundary = sleepBoundaryMins(sleepMins);
   const next = new Date(d);
-  next.setHours(24, 0, 0, 0);
+  next.setHours(0, 0, 0, 0);
+  next.setMinutes(boundary, 0, 0);
+  if (d.getTime() >= next.getTime()) next.setDate(next.getDate() + 1);
   return Math.max(0, next.getTime() - d.getTime());
 }
 
@@ -213,6 +234,97 @@ function snapValue(v: number, snap: "quarters" | "tenths" | "free") {
   if (snap === "free") return clamped;
   const step = snap === "tenths" ? 0.1 : 0.25;
   return Math.round(clamped / step) * step;
+}
+
+function minutesSinceMidnight(d: Date) {
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+function expectedPctAt(d: Date, wakeMins: number, sleepMins: number) {
+  const start = clamp(Math.round(wakeMins), 0, 1439);
+  let end = clamp(Math.round(sleepMins), 0, 2879);
+  let now = minutesSinceMidnight(d);
+  if (end <= start) end += 1440;
+  if (now < start) now += 1440;
+  if (now <= start) return 0;
+  if (now >= end) return 1;
+
+  const duration = clamp(end - start, 6 * 60, 20 * 60);
+  const progress = duration > 0 ? (now - start) / duration : 1;
+  const checkpoints: Array<[number, number]> = [
+    [0.25, 0.3],
+    [0.5, 0.55],
+    [0.7, 0.75],
+    [0.87, 0.9],
+    [1, 1],
+  ];
+  let prev: [number, number] = [0, 0];
+  for (const [t, pct] of checkpoints) {
+    if (progress <= t) {
+      const span = t - prev[0];
+      const ratio = span ? (progress - prev[0]) / span : 0;
+      return prev[1] + (pct - prev[1]) * ratio;
+    }
+    prev = [t, pct];
+  }
+  return 1;
+}
+
+function expectedMlAt(goalML: number, d: Date, wakeMins: number, sleepMins: number) {
+  return Math.round(goalML * expectedPctAt(d, wakeMins, sleepMins));
+}
+
+function timeParts(mins: number) {
+  const m = clamp(Math.round(mins), 0, 2879);
+  const dayOffset = m >= 1440 ? 1 : 0;
+  const local = m % 1440;
+  const h24 = Math.floor(local / 60);
+  const min = local % 60;
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return { h12, min, ampm, dayOffset };
+}
+
+function toMinutes(h12: number, min: number, ampm: "AM" | "PM") {
+  const h = clamp(Math.round(h12), 1, 12);
+  const m = clamp(Math.round(min), 0, 59);
+  const h24 = (h % 12) + (ampm === "PM" ? 12 : 0);
+  return h24 * 60 + m;
+}
+
+function normalizeHourInput(rawValue: string) {
+  const n = Number(rawValue);
+  if (!Number.isFinite(n)) return 1;
+  const h = Math.round(n);
+  if (h <= 0) return 12;
+  if (h > 12) return 1;
+  return h;
+}
+
+function normalizeMinuteInput(rawValue: string) {
+  const n = Number(rawValue);
+  if (!Number.isFinite(n)) return 0;
+  return clamp(Math.round(n), 0, 59);
+}
+
+function formatTime12h(mins: number) {
+  const m = clamp(Math.round(mins), 0, 2879);
+  const dayOffset = m >= 1440 ? 1 : 0;
+  const local = m % 1440;
+  const h24 = Math.floor(local / 60);
+  const min = local % 60;
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const dayTag = dayOffset ? " (+1)" : "";
+  return `${h12}:${String(min).padStart(2, "0")} ${ampm}${dayTag}`;
+}
+
+function formatClock12h(d: Date) {
+  const h24 = d.getHours();
+  const min = d.getMinutes();
+  const ampm = h24 >= 12 ? "PM" : "AM";
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${String(min).padStart(2, "0")} ${ampm}`;
 }
 
 function shapeClasses(shape: string) {
@@ -246,6 +358,9 @@ function BottleVector({
   level,
   className,
   style,
+  targetLevel,
+  targetStatus,
+  targetLabel,
   fillColor = "rgba(10,132,255,0.35)",
   edgeColor = "rgba(10,132,255,0.65)",
 }: {
@@ -253,16 +368,24 @@ function BottleVector({
   level: number;
   className?: string;
   style?: React.CSSProperties;
+  targetLevel?: number;
+  targetStatus?: "behind" | "ahead";
+  targetLabel?: string;
   fillColor?: string;
   edgeColor?: string;
 }) {
   const id = useId();
   const d = bottlePath(shape);
   const pct = clamp(level, 0, 1);
+  const targetPct = clamp(targetLevel ?? pct, 0, 1);
 
   const H = 300;
   const W = 140;
   const y = H - pct * H;
+  const yTarget = clamp(H - targetPct * H, 6, H - 6);
+  const targetStroke = targetStatus === "behind" ? "rgba(255,69,58,0.45)" : "rgba(34,197,94,0.45)";
+  const targetTextColor = targetStatus === "behind" ? "rgba(255,69,58,0.7)" : "rgba(34,197,94,0.7)";
+  const labelY = yTarget < 24 ? yTarget + 14 : yTarget - 6;
 
   return (
     <svg viewBox="0 0 140 300" className={`h-[300px] ${className || ""}`} style={style} aria-hidden="true">
@@ -270,12 +393,25 @@ function BottleVector({
         <clipPath id={`clip-${id}`}>
           <path d={d} />
         </clipPath>
+        <style>{`
+          @keyframes fadeOutLine { from { opacity: 1; } to { opacity: 0; } }
+        `}</style>
       </defs>
 
       <g clipPath={`url(#clip-${id})`}>
         <rect x="0" y="0" width={W} height={H} fill="rgba(255,255,255,0.03)" />
         <rect x="0" y={y} width={W} height={pct * H} fill={fillColor} />
         <rect x="10" y={Math.max(0, y - 2)} width={W - 20} height="2" fill={edgeColor} />
+        <line
+          x1="10"
+          x2={W - 10}
+          y1={yTarget}
+          y2={yTarget}
+          stroke={targetStroke}
+          strokeWidth="2.5"
+          strokeDasharray="6 4"
+          style={targetStatus === "ahead" ? { animation: "fadeOutLine 0.6s ease forwards" } : undefined}
+        />
       </g>
 
       <path d={d} fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="4" />
@@ -312,9 +448,11 @@ function makeDefaultState() {
     bottleML: 500,
     shape: "standard" as "tall" | "standard" | "wide" | "tumbler",
     snap: "free" as "quarters" | "tenths" | "free",
+    wakeMins: 480,
+    sleepMins: 1320,
 
 
-    dayKey: dayKey(),
+    dayKey: dayKeyBySleep(new Date(), 1320),
     completedBottles: 0,
     remaining: 1,
 
@@ -356,10 +494,8 @@ function DropletPlugIcon({ className }: { className?: string }) {
         fill="none"
         opacity="0.35"
       />
-      <rect x="10" y="10" width="4" height="5" rx="1" fill="rgba(255,255,255,.92)" />
-      <rect x="9.4" y="9" width="1" height="2" rx="0.4" fill="rgba(255,255,255,.92)" />
-      <rect x="13.6" y="9" width="1" height="2" rx="0.4" fill="rgba(255,255,255,.92)" />
-      <rect x="11" y="15" width="2" height="2" rx="1" fill="rgba(255,255,255,.92)" />
+      <rect x="11" y="10" width="2" height="6" rx="1" fill="rgba(255,255,255,.92)" />
+      <rect x="9" y="12" width="6" height="2" rx="1" fill="rgba(255,255,255,.92)" />
     </svg>
   );
 }
@@ -624,7 +760,7 @@ function OnboardingFrame({
         @keyframes labelIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
 
-      <div className="mx-auto max-w-xl min-h-screen px-5 pt-10 pb-10 flex flex-col relative">
+      <div className="mx-auto max-w-xl min-h-screen px-5 pt-6 pb-10 md:pt-10 flex flex-col relative">
         <div style={{ animation: "introIn .55s ease-out both" }} className="relative flex items-center justify-center">
           <div className="text-[18px] font-medium text-[#4D5564] tracking-wide">—&nbsp; {stepText} &nbsp;—</div>
 
@@ -639,11 +775,11 @@ function OnboardingFrame({
           </button>
         </div>
 
-        <div className="mt-28 text-center" style={{ animation: "introIn .65s ease-out .08s both" }}>
+        <div className="mt-16 md:mt-28 text-center" style={{ animation: "introIn .65s ease-out .08s both" }}>
           <div className="text-[46px] leading-[1.06] font-semibold">{title}</div>
         </div>
 
-        <div className="mt-10 flex items-center justify-center" style={{ animation: "introIn .65s ease-out .18s both" }}>
+        <div className="mt-6 md:mt-10 flex items-center justify-center" style={{ animation: "introIn .65s ease-out .18s both" }}>
           <div className="max-w-[78%] text-center text-[21px] leading-relaxed text-[#757B8A]" style={{ animation: "softFloat 5.5s ease-in-out .8s infinite" }}>
             {body}
           </div>
@@ -845,6 +981,31 @@ export default function WaterBottleTracker() {
     runSelfTests();
   }, []);
 
+  const [nowTick, setNowTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick((t) => t + 1), 10000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!state.hasOnboarded) return;
+    if ([1, 2, 3, 4, 9, 10].includes(state.step)) {
+      setState((s) => ({ ...s, step: 0 }));
+    }
+  }, [state.hasOnboarded, state.step]);
+
+  useEffect(() => {
+    const p = timeParts(state.wakeMins);
+    setWakeHourInput(String(p.h12));
+    setWakeMinInput(String(p.min).padStart(2, "0"));
+  }, [state.wakeMins]);
+
+  useEffect(() => {
+    const p = timeParts(state.sleepMins);
+    setSleepHourInput(String(p.h12));
+    setSleepMinInput(String(p.min).padStart(2, "0"));
+  }, [state.sleepMins]);
+
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
@@ -860,7 +1021,7 @@ export default function WaterBottleTracker() {
 
   useEffect(() => {
     const resetToTodayIfNeeded = () => {
-      const today = dayKey();
+      const today = dayKeyBySleep(new Date(), stateRef.current.sleepMins);
       setState((s) => {
         if (s.dayKey === today) return s;
 
@@ -903,7 +1064,7 @@ export default function WaterBottleTracker() {
 
     let timeoutId: number | undefined;
     const scheduleNext = () => {
-      const ms = msUntilNextMidnight();
+      const ms = msUntilNextSleep(new Date(), stateRef.current.sleepMins);
       timeoutId = window.setTimeout(() => {
         resetToTodayIfNeeded();
         scheduleNext();
@@ -930,15 +1091,15 @@ export default function WaterBottleTracker() {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, []);
+  }, [state.sleepMins]);
 
   useEffect(() => {
     persistNow(state);
   }, [state]);
 
-  const [resetMs, setResetMs] = useState(() => msUntilNextMidnight());
+  const [resetMs, setResetMs] = useState(() => msUntilNextSleep(new Date(), state.sleepMins));
   useEffect(() => {
-    const tick = () => setResetMs(msUntilNextMidnight());
+    const tick = () => setResetMs(msUntilNextSleep(new Date(), state.sleepMins));
     tick();
     const id = window.setInterval(tick, 1000);
     const onVis = () => {
@@ -949,7 +1110,7 @@ export default function WaterBottleTracker() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, []);
+  }, [state.sleepMins]);
 
   const bottlesPerDayText = useMemo(() => formatBottlesDecimal(state.goalML, state.bottleML), [state.goalML, state.bottleML]);
 
@@ -964,6 +1125,38 @@ export default function WaterBottleTracker() {
     const left = Math.max(0, goalBottles - consumedBottles);
     return format1(left);
   }, [state.goalML, state.bottleML, totalConsumed]);
+  const bottlesLeftValue = Number(bottlesLeftText);
+  const bottleWord = bottlesLeftValue > 1 ? "bottles" : "bottle";
+  const expectedNowMl = useMemo(
+    () => expectedMlAt(state.goalML, new Date(), state.wakeMins, state.sleepMins),
+    [state.goalML, state.wakeMins, state.sleepMins, nowTick]
+  );
+  const expectedNowPct = useMemo(
+    () => expectedPctAt(new Date(), state.wakeMins, state.sleepMins),
+    [state.wakeMins, state.sleepMins, nowTick]
+  );
+  const diffMl = useMemo(() => totalConsumed - expectedNowMl, [totalConsumed, expectedNowMl]);
+  const pacingToleranceMl = useMemo(() => Math.max(state.goalML * 0.05, 150), [state.goalML]);
+  const pacingStatus = useMemo(() => {
+    if (diffMl > pacingToleranceMl) return "ahead" as const;
+    if (diffMl < -pacingToleranceMl) return "behind" as const;
+    return diffMl >= 0 ? "ahead" : "behind";
+  }, [diffMl, pacingToleranceMl]);
+  const pacingBottleDelta = useMemo(() => {
+    if (state.bottleML <= 0) return 0;
+    const deltaMl = pacingStatus === "behind" ? Math.max(0, -diffMl) : Math.max(0, diffMl);
+    const bottles = Math.max(0, deltaMl / state.bottleML);
+    return Math.round(bottles * 2) / 2;
+  }, [diffMl, state.bottleML, pacingStatus]);
+  const pacingLabel = useMemo(() => (pacingStatus === "behind" ? "Behind" : "Ahead"), [pacingStatus]);
+  const targetRemainingFraction = useMemo(() => {
+    if (state.bottleML <= 0) return state.remaining;
+    const expectedCurrentBottleConsumed = expectedNowMl % state.bottleML;
+    return clamp(1 - expectedCurrentBottleConsumed / state.bottleML, 0, 1);
+  }, [expectedNowMl, state.bottleML, state.remaining]);
+  const targetLineRemainingFraction =
+    pacingStatus === "behind" && pacingBottleDelta >= 1 ? 0.06 : targetRemainingFraction;
+  const targetLineY = Math.round(300 - targetLineRemainingFraction * 300);
 
   function advanceBottle(s: AppState) {
     const n = ceilDiv(s.goalML, s.bottleML);
@@ -1245,6 +1438,10 @@ export default function WaterBottleTracker() {
   }, [pendingRemaining]);
 
   const [showQuickAdd, setShowQuickAdd] = useState(false);
+  const [wakeHourInput, setWakeHourInput] = useState(() => String(timeParts(state.wakeMins).h12));
+  const [wakeMinInput, setWakeMinInput] = useState(() => String(timeParts(state.wakeMins).min).padStart(2, "0"));
+  const [sleepHourInput, setSleepHourInput] = useState(() => String(timeParts(state.sleepMins).h12));
+  const [sleepMinInput, setSleepMinInput] = useState(() => String(timeParts(state.sleepMins).min).padStart(2, "0"));
   const [bottleSizeFlowSource, setBottleSizeFlowSource] = useState<"onboarding" | "settings">("onboarding");
 
   function switchBottleKeepingConsumed(patch: Partial<AppState>) {
@@ -1325,26 +1522,19 @@ export default function WaterBottleTracker() {
 
         <div className="px-5 pt-7 pb-5">
           <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-2xl font-extrabold leading-tight">How much water is in your bottle?</div>
-              <div className="mt-2 text-sm text-white/60">
-                Goal {state.goalML} ml • Bottle {state.bottleML} ml •{" "}
-                <span className="font-extrabold text-[#0A84FF]">{bottlesLeftText} bottle(s) till goal</span>
+            <div className="flex-1 text-center">
+              <div className="text-5xl font-extrabold leading-tight">
+                <span className="text-[#0A84FF]">{bottlesLeftText}</span> {bottleWord} till goal
               </div>
-              <div className="mt-1 text-xs text-white/50">
-                Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
-              </div>
-              <div className="mt-1 text-xs text-white/50">
-                Yesterday:{" "}
+              <div className="mt-3 text-2xl font-extrabold leading-tight text-white">How much water is in your bottle?</div>
+              <div className="mt-2 text-xs text-white/45">
                 {(() => {
-                  const y = (state.dailyLog || {})[prevDayKey()];
-                  if (!y) return <span className="text-white/40">—</span>;
-                  const pct = y.goalML > 0 ? Math.round((y.consumedML / y.goalML) * 100) : 0;
-                  return (
-                    <span className="font-extrabold tabular-nums text-white/70">
-                      {y.consumedML} / {y.goalML} ml ({pct}%)
-                    </span>
-                  );
+                  const now = new Date();
+                  const timeStr = formatClock12h(now);
+                  const goalBottles = state.bottleML > 0 ? state.goalML / state.bottleML : 0;
+                  const expectedMl = expectedMlAt(state.goalML, now, state.wakeMins, state.sleepMins);
+                  const expectedBottles = state.bottleML > 0 ? expectedMl / state.bottleML : 0;
+                  return `By ${timeStr}, the app expects you to have drunk: ~${format1(expectedBottles)} bottles, out of your ${format1(goalBottles)} bottles/day goal.`;
                 })()}
               </div>
             </div>
@@ -1362,7 +1552,28 @@ export default function WaterBottleTracker() {
 
         <div className="px-5">
           <div className="flex items-center justify-center gap-6">
-            <BottleVector shape={state.shape} level={pendingRemaining} className={shapeClasses(state.shape)} />
+            <div className="relative h-[300px]">
+              {pacingStatus === "behind" && (
+                <div
+                  className={
+                    "absolute left-[-10px] text-2xl font-extrabold leading-none " +
+                    (pacingStatus === "behind" ? "text-[#FF453A]" : "text-green-400")
+                  }
+                  style={{
+                    top: `${Math.max(6, Math.min(294, targetLineY + (pacingStatus === "behind" && pacingBottleDelta > 1 ? -20 : 0)))}px`,
+                  }}
+                >
+                  🏁
+                </div>
+              )}
+              <BottleVector
+                shape={state.shape}
+                level={pendingRemaining}
+                className={shapeClasses(state.shape)}
+                targetLevel={targetLineRemainingFraction}
+                targetStatus={pacingStatus}
+              />
+            </div>
 
             <div className="flex flex-col items-center gap-3">
               <div className="flex flex-col items-start gap-3">
@@ -1488,7 +1699,7 @@ export default function WaterBottleTracker() {
 
           <div className="mt-8">
             <div className="flex items-end justify-between">
-              <div className="text-sm text-white/70">Daily progress</div>
+              <div className="text-sm text-white/70">Daily progress • Bottle {state.bottleML} ml</div>
               <div className="text-sm font-extrabold tabular-nums">
                 {totalConsumed} / {state.goalML} ml
               </div>
@@ -1498,6 +1709,22 @@ export default function WaterBottleTracker() {
             </div>
             <div className="mt-2 text-xs text-white/55">Tip: scroll down to 0% when you finish the bottle — it will auto-start the next one.</div>
             <div className="mt-1 text-xs italic text-[#FF453A]/70">Artwork will be updated in the next build.</div>
+            <div className="mt-2 text-xs text-white/50">
+              Resets in <span className="font-extrabold tabular-nums text-white/70">{formatCountdown(resetMs)}</span>
+            </div>
+            <div className="mt-1 text-xs text-white/50">
+              Yesterday:{" "}
+                {(() => {
+                  const y = (state.dailyLog || {})[prevDayKeyBySleep(new Date(), state.sleepMins)];
+                  if (!y) return <span className="text-white/40">—</span>;
+                  const pct = y.goalML > 0 ? Math.round((y.consumedML / y.goalML) * 100) : 0;
+                  return (
+                  <span className="font-extrabold tabular-nums text-white/70">
+                    {y.consumedML} / {y.goalML} ml ({pct}%)
+                  </span>
+                );
+              })()}
+            </div>
           </div>
         </div>
       </div>
@@ -1593,8 +1820,11 @@ export default function WaterBottleTracker() {
                 min={100}
                 max={2000}
                 step={50}
-                value={state.bottleML}
-                onChange={(e) => setState((s) => ({ ...s, bottleML: Number((e.target as HTMLInputElement).value || 500) }))}
+                value={state.bottleML || ""}
+                onChange={(e) => {
+                  const raw = (e.target as HTMLInputElement).value;
+                  setState((s) => ({ ...s, bottleML: raw === "" ? 0 : Number(raw) }));
+                }}
               />
               <div className="mt-2 text-xs text-white/55">Common sizes: 500, 750, 1000 ml</div>
             </div>
@@ -1769,6 +1999,163 @@ export default function WaterBottleTracker() {
               </button>
             </div>
 
+            <div
+              className="mt-5 rounded-3xl border border-white/10 bg-white/6 p-5"
+              style={{ animation: "setupInSoft .6s cubic-bezier(0.2,0,0,1) .22s both" }}
+            >
+              <div className="text-lg font-extrabold">Hydration window</div>
+              <div className="mt-1 text-xs text-white/60">Provide a rough estimate — this helps pace your goal through the day.</div>
+
+              <div className="mt-4">
+                <div className="text-xs text-white/65">What time do you usually wake up?</div>
+                <div className="mt-2 flex items-center gap-3">
+                  <input
+                    className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\\d*"
+                    value={wakeHourInput}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                      if (raw.length > 2) return;
+                      setWakeHourInput(raw);
+                    }}
+                    onBlur={() => {
+                      const h = normalizeHourInput(wakeHourInput);
+                      const m = normalizeMinuteInput(wakeMinInput);
+                      setState((s) => ({
+                        ...s,
+                        wakeMins: toMinutes(h, m, timeParts(s.wakeMins).ampm),
+                      }));
+                      setWakeHourInput(String(h));
+                      setWakeMinInput(String(m).padStart(2, "0"));
+                    }}
+                  />
+                  <span className="text-white/40">:</span>
+                  <input
+                    className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\\d*"
+                    value={wakeMinInput}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                      if (raw.length > 2) return;
+                      setWakeMinInput(raw);
+                    }}
+                    onBlur={() => {
+                      const h = normalizeHourInput(wakeHourInput);
+                      const m = normalizeMinuteInput(wakeMinInput);
+                      setState((s) => ({
+                        ...s,
+                        wakeMins: toMinutes(h, m, timeParts(s.wakeMins).ampm),
+                      }));
+                      setWakeHourInput(String(h));
+                      setWakeMinInput(String(m).padStart(2, "0"));
+                    }}
+                  />
+                  <div className="ml-2 flex gap-2">
+                    {(["AM", "PM"] as const).map((p) => {
+                      const active = timeParts(state.wakeMins).ampm === p;
+                      return (
+                        <button
+                          key={p}
+                          onClick={() =>
+                            setState((s) => ({
+                              ...s,
+                              wakeMins: toMinutes(timeParts(s.wakeMins).h12, timeParts(s.wakeMins).min, p),
+                            }))
+                          }
+                          className={
+                            "px-3 py-2 rounded-xl border text-xs font-extrabold " +
+                            (active ? "border-[#0A84FF]/60 bg-[#0A84FF]/20 text-white" : "border-white/15 bg-white/5 text-white/70")
+                          }
+                        >
+                          {p}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="mt-1 text-[11px] text-white/45">Doesn’t have to be exact.</div>
+              </div>
+
+              <div className="mt-4">
+                <div className="text-xs text-white/65">What time do you usually sleep?</div>
+                <div className="mt-2 flex items-center gap-3">
+                  <input
+                    className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\\d*"
+                    value={sleepHourInput}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                      if (raw.length > 2) return;
+                      setSleepHourInput(raw);
+                    }}
+                    onBlur={() => {
+                      const h = normalizeHourInput(sleepHourInput);
+                      const m = normalizeMinuteInput(sleepMinInput);
+                      setState((s) => {
+                        const base = toMinutes(h, m, timeParts(s.sleepMins).ampm);
+                        return { ...s, sleepMins: base <= s.wakeMins ? base + 1440 : base };
+                      });
+                      setSleepHourInput(String(h));
+                      setSleepMinInput(String(m).padStart(2, "0"));
+                    }}
+                  />
+                  <span className="text-white/40">:</span>
+                  <input
+                    className="w-16 rounded-xl border border-white/15 bg-white/5 px-2 py-2 text-center font-extrabold outline-none"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\\d*"
+                    value={sleepMinInput}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLInputElement).value.replace(/\\D/g, "");
+                      if (raw.length > 2) return;
+                      setSleepMinInput(raw);
+                    }}
+                    onBlur={() => {
+                      const h = normalizeHourInput(sleepHourInput);
+                      const m = normalizeMinuteInput(sleepMinInput);
+                      setState((s) => {
+                        const base = toMinutes(h, m, timeParts(s.sleepMins).ampm);
+                        return { ...s, sleepMins: base <= s.wakeMins ? base + 1440 : base };
+                      });
+                      setSleepHourInput(String(h));
+                      setSleepMinInput(String(m).padStart(2, "0"));
+                    }}
+                  />
+                  <div className="ml-2 flex gap-2">
+                    {(["AM", "PM"] as const).map((p) => {
+                      const active = timeParts(state.sleepMins).ampm === p;
+                      return (
+                        <button
+                          key={p}
+                          onClick={() =>
+                            setState((s) => {
+                              const base = toMinutes(timeParts(s.sleepMins).h12, timeParts(s.sleepMins).min, p);
+                              return { ...s, sleepMins: base <= s.wakeMins ? base + 1440 : base };
+                            })
+                          }
+                          className={
+                            "px-3 py-2 rounded-xl border text-xs font-extrabold " +
+                            (active ? "border-[#0A84FF]/60 bg-[#0A84FF]/20 text-white" : "border-white/15 bg-white/5 text-white/70")
+                          }
+                        >
+                          {p}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {timeParts(state.sleepMins).dayOffset === 1 && <div className="text-[11px] text-white/45">(+1)</div>}
+                </div>
+                <div className="mt-1 text-[11px] text-white/45">Doesn’t have to be exact.</div>
+              </div>
+            </div>
+
             <div className="mt-4" style={{ animation: "setupIn .55s ease-out .26s both" }}>
               <button
                 onClick={() => setStep(7)}
@@ -1806,8 +2193,11 @@ export default function WaterBottleTracker() {
                   min={30}
                   max={200}
                   step={0.5}
-                  value={state.weightKg}
-                  onChange={(e) => setState((s) => ({ ...s, weightKg: Number((e.target as HTMLInputElement).value || 70) }))}
+                  value={state.weightKg || ""}
+                  onChange={(e) => {
+                    const raw = (e.target as HTMLInputElement).value;
+                    setState((s) => ({ ...s, weightKg: raw === "" ? 0 : Number(raw) }));
+                  }}
                 />
               </label>
 
@@ -1868,8 +2258,11 @@ export default function WaterBottleTracker() {
                     min={500}
                     max={6000}
                     step={50}
-                    value={state.goalML}
-                    onChange={(e) => setState((s) => ({ ...s, goalML: Number((e.target as HTMLInputElement).value || 2000) }))}
+                    value={state.goalML || ""}
+                    onChange={(e) => {
+                      const raw = (e.target as HTMLInputElement).value;
+                      setState((s) => ({ ...s, goalML: raw === "" ? 0 : Number(raw) }));
+                    }}
                   />
                 </div>
               </div>
