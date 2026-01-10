@@ -1151,7 +1151,7 @@ export default function WaterBottleTracker() {
 
   function setRemaining(nextRemaining: number, meta: { action?: string } = {}) {
     setState((s) => {
-      const today = dayKey();
+      const today = dayKeyBySleep(new Date(), s.sleepMins);
       let ss = s;
       if (ss.dayKey !== today) {
         ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, carryML: 0, extraML: 0, history: [], celebrate: null };
@@ -1191,7 +1191,7 @@ export default function WaterBottleTracker() {
 
   function addExtra(ml: number) {
     setState((s) => {
-      const today = dayKey();
+      const today = dayKeyBySleep(new Date(), s.sleepMins);
       let ss = s;
       if (ss.dayKey !== today) {
         ss = { ...ss, dayKey: today, completedBottles: 0, remaining: 1, carryML: 0, extraML: 0, history: [], celebrate: null };
@@ -2293,7 +2293,7 @@ export default function WaterBottleTracker() {
                     ...s,
                     hasOnboarded: true,
                     step: 0,
-                    dayKey: dayKey(),
+                    dayKey: dayKeyBySleep(new Date(), s.sleepMins),
                     completedBottles: 0,
                     remaining: 1,
                     carryML: 0,
